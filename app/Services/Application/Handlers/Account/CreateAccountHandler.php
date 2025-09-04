@@ -48,10 +48,10 @@ class CreateAccountHandler
      */
     public function handle(CreateAccountDTO $accountData): AccountDomainObject
     {
-        dd($accountData);
         if ($this->config->get('app.disable_registration')) {
             throw new AccountRegistrationDisabledException();
         }
+
         $isSaasMode = $this->config->get('app.saas_mode_enabled');
         $passwordHash = $this->hashManager->make($accountData->password);;
 
