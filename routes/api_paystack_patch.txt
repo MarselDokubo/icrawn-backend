@@ -1,0 +1,11 @@
+// ...existing code...
+        // Orders
+        $router->post('/events/{event_id}/order', CreateOrderActionPublic::class);
+        $router->put('/events/{event_id}/order/{order_short_id}', CompleteOrderActionPublic::class);
+        $router->get('/events/{event_id}/order/{order_short_id}', GetOrderActionPublic::class);
+        $router->post('/events/{event_id}/order/{order_short_id}/await-offline-payment', TransitionOrderToOfflinePaymentPublicAction::class);
+        $router->get('/events/{event_id}/order/{order_short_id}/invoice', DownloadOrderInvoicePublicAction::class);
+        // Paystack payment gateway
+        $router->post('/events/{event_id}/order/{order_short_id}/paystack/initialize', InitializePaystackAction::class);
+        $router->get('/events/{event_id}/order/{order_short_id}/paystack/verify', VerifyPaystackAction::class);
+        // ...existing code...
