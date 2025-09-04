@@ -1,5 +1,5 @@
 {
-    "name": "hieventsdev/iCrawn.Events",
+    "name": "icrawn-events/backend",
     "type": "project",
     "description": "iCrawn.Events - Ticket selling and event management.",
     "keywords": ["ticketing", "events"],
