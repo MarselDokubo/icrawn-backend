@@ -25,6 +25,10 @@ RUN composer install \
     --optimize-autoloader \
     --prefer-dist
 
+# Ensure /etc/nginx exists and copy our config
+RUN mkdir -p /etc/nginx
+COPY docker/nginx.conf /etc/nginx/nginx.conf
+
 # ---- Copy application source ----
 COPY --chown=www-data:www-data . .
 
