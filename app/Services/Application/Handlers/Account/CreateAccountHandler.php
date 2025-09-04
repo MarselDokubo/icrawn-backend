@@ -51,7 +51,7 @@ class CreateAccountHandler
         if ($this->config->get('app.disable_registration')) {
             throw new AccountRegistrationDisabledException();
         }
-
+        dd($accountData);
         $isSaasMode = $this->config->get('app.saas_mode_enabled');
         $passwordHash = $this->hashManager->make($accountData->password);;
 
