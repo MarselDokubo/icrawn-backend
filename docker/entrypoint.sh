@@ -9,6 +9,9 @@ err() { printf "\033[1;31m[entrypoint:error]\033[0m %s\n" "$*"; }
 
 # Helpful defaults
 export NGINX_PORT="${PORT:-8080}"
+envsubst '$NGINX_PORT' \
+  < /etc/nginx/nginx.conf.template \
+  > /etc/nginx/nginx.conf
 
 # Sanity: permissions (usually already set in Dockerfile, but safe here)
 # If this ever fails (read-only FS), it won't crash thanks to `|| true`.
@@ -61,4 +64,5 @@ sed "s/__PORT__/${PORT}/" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Hand off to s6-overlay supervisor (starts php-fpm + nginx)
 log "Starting services on port ${NGINX_PORT}…"
+head -n 40 /etc/nginx/nginx.conf | sed -n '1,60p'
 exec /init

@@ -27,7 +27,7 @@ RUN composer install \
 
 # Ensure /etc/nginx exists and copy our config
 RUN mkdir -p /etc/nginx
-COPY docker/nginx.conf /etc/nginx/nginx.conf.template
+COPY docker/nginx.conf.template /etc/nginx/nginx.conf.template
 
 # ---- Copy application source ----
 COPY --chown=www-data:www-data . .

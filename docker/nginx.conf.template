@@ -21,7 +21,7 @@ http {
 
   server {
     # Render injects $PORT; our entrypoint will substitute __PORT__ here.
-    listen      0.0.0.0:__PORT__;
+    listen 0.0.0.0:__PORT__;
     server_name _;
 
     root  /var/www/html/public;
