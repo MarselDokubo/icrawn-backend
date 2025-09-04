@@ -155,9 +155,7 @@ $router->prefix('/auth')->group(
         // Auth
         $router->post('/login', LoginAction::class)->name('auth.login');
         $router->post('/logout', LogoutAction::class)->name('auth.logout');
-        $router->post('/register', function() {
-            return response()->json(['message' => 'Welcome to the public homepage!']);
-        });
+        $router->post('/register', CreateAccountAction::class)->name('auth.register');
         $router->post('/forgot-password', ForgotPasswordAction::class)->name('auth.forgot-password');
 
         // Invitations
@@ -347,7 +345,10 @@ $router->prefix('/public')->group(
 
     // Events
 
-        $router->get('/events', GetAllEventsPublicAction::class);
+        $router->get('/events',function() {
+            return response()->json(['message' => 'Welcome to the public homepage!']);
+        });
+        // $router->get('/events', GetAllEventsPublicAction::class);
         $router->get('/events/{event_id}', GetEventPublicAction::class);
 
         // Organizers
