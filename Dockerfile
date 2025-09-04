@@ -1,5 +1,5 @@
 # Base image: PHP-FPM + Nginx + Alpine + helper scripts
-FROM serversideup/php:8.4-fpm-nginx-alpine
+FROM serversideup/php:8.3-fpm-nginx-alpine
 
 ENV PHP_OPCACHE_ENABLE=1
 
