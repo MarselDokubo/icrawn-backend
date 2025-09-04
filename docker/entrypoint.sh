@@ -10,7 +10,8 @@ err()  { printf "\033[1;31m[entrypoint:error]\033[0m %s\n" "$*"; }
 
 # ---- Render sets $PORT at runtime. We'll use it everywhere. ----
 : "${PORT:=8080}"                      # safety default if PORT missing
-export NGINX_PORT="${PORT}"            # serversideup helper scripts respect this
+# Ensure no other scripts try to start nginx on a port via env
+unset NGINX_PORT || true
 
 # ---- Filesystem / permissions (idempotent) ----
 # Laravel writable bits
@@ -24,14 +25,22 @@ chown www-data:www-data storage/logs/laravel.log || true
 chmod 664 storage/logs/laravel.log || true
 
 # ---- Clear any bundled/conflicting nginx vhost configs ----
-# Some base images ship with /etc/nginx/conf.d/*.conf listening on 80/8080 – nuke them.
+# Some base images ship with extra vhosts listening on 80/8080 – nuke them.
 if [ -d /etc/nginx/conf.d ]; then
   rm -f /etc/nginx/conf.d/*.conf || true
+fi
+if [ -d /etc/nginx/http.d ]; then
+  rm -f /etc/nginx/http.d/*.conf || true
+fi
+if [ -d /etc/nginx/sites-enabled ]; then
+  rm -f /etc/nginx/sites-enabled/* || true
 fi
 
 # ---- Render our nginx.conf from template, pinning listen to $PORT ----
 if [ -f /etc/nginx/nginx.conf.template ]; then
   sed "s/__PORT__/${PORT}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+  # optional visibility:
+  grep -n "listen" /etc/nginx/nginx.conf || true
 else
   warn "/etc/nginx/nginx.conf.template not found; nginx may fail to start."
 fi
@@ -59,6 +68,16 @@ php artisan storage:link || true
 # ---- Optional: wait for DB & run migrations (only if DB envs exist) ----
 if [ -n "${DB_HOST:-}" ] && [ -n "${DB_DATABASE:-}" ] && [ -n "${DB_USERNAME:-}" ]; then
   log "Waiting for database and running migrations…"
+
+  # Default DB_PORT if unset (pgsql/mysql common defaults)
+  if [ -z "${DB_PORT:-}" ]; then
+    case "${DB_CONNECTION:-pgsql}" in
+      mysql) export DB_PORT=3306 ;;
+      pgsql|postgres|postgresql|"") export DB_PORT=5432 ;;
+      *) : ;; # leave empty for other drivers
+    esac
+  fi
+
   tries=0
   # tiny PDO probe avoids booting the whole framework
   until php -r '
@@ -83,5 +102,5 @@ else
 fi
 
 # ---- Final: start supervised services (php-fpm + nginx via s6-overlay) ----
-log "Starting services on port ${NGINX_PORT}…"
+log "Starting services on port ${PORT}…"
 exec /init
