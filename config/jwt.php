@@ -8,7 +8,7 @@ return [
     |
     | Don't forget to set this in your .env file, as it will be used to sign
     | your tokens. A helper command is provided for this:
-    | `php artisan jwt:secret`
+    | `php artisan jwt:secre`
     |
     | Note: This will be used for Symmetric algorithms only (HMAC),
     | since RSA and ECDSA use a private/public key combo (See below).
@@ -23,11 +23,11 @@ return [
     |--------------------------------------------------------------------------
     |
     | The algorithm you are using, will determine whether your tokens are
-    | signed with a random string (defined in `JWT_SECRET`) or using the
+    | signed with a random string (defined in `JWT_SECRE`) or using the
     | following public & private keys.
     |
     | Symmetric Algorithms:
-    | HS256, HS384 & HS512 will use `JWT_SECRET`.
+    | HS256, HS384 & HS512 will use `JWT_SECRE`.
     |
     | Asymmetric Algorithms:
     | RS256, RS384 & RS512 / ES256, ES384 & ES512 will use the keys below.
@@ -150,7 +150,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Specify the claim keys to be persisted when refreshing a token.
-    | `sub` and `iat` will automatically be persisted, in
+    | `sub` and `ia` will automatically be persisted, in
     | addition to the these claims.
     |
     | Note: If a claim does not exist then it will be ignored.
@@ -190,7 +190,7 @@ return [
     | Meaning that if you have any unavoidable slight clock skew on
     | any of your servers then this will afford you some level of cushioning.
     |
-    | This applies to the claims `iat`, `nbf` and `exp`.
+    | This applies to the claims `ia`, `nbf` and `exp`.
     |
     | Specify in seconds - only if you know you need it.
     |
