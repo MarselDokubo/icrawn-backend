@@ -398,7 +398,7 @@ $router->prefix('/public')->group(
 
         // Public homepage, about, contact
         $router->get('/homepage', function() {
-            return response()->json(['message' => 'Welcome to the public homepage!']);
+            return response()->json(['message' => 'Welcome to the public homepage']);
         });
         $router->get('/about', function() {
             return response()->json(['message' => 'About page content']);
