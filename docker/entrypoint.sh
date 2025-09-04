@@ -53,6 +53,11 @@ if [ -n "${DB_HOST:-}" ] && [ -n "${DB_DATABASE:-}" ] && [ -n "${DB_USERNAME:-}"
 else
   warn "DB env vars not set; skipping migrations."
 fi
+# Ensure PORT exists (Render sets it at runtime)
+: "${PORT:=8080}"
+
+# Render Nginx config from template by substituting __PORT__
+sed "s/__PORT__/${PORT}/" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Hand off to s6-overlay supervisor (starts php-fpm + nginx)
 log "Starting services on port ${NGINX_PORT}…"
