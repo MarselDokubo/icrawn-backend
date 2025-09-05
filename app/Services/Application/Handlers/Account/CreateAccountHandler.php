@@ -26,6 +26,9 @@ use NumberFormatter;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
+// ⬇️ ADD THIS
+use HiEvents\Support\TxnProbe;
+
 class CreateAccountHandler
 {
     public function __construct(
@@ -39,9 +42,7 @@ class CreateAccountHandler
         private readonly AccountUserRepositoryInterface          $accountUserRepository,
         private readonly AccountConfigurationRepositoryInterface $accountConfigurationRepository,
         private readonly LoggerInterface                         $logger,
-    )
-    {
-    }
+    ) {}
 
     /**
      * @throws Throwable
@@ -52,41 +53,61 @@ class CreateAccountHandler
             throw new AccountRegistrationDisabledException();
         }
 
-        $isSaasMode = $this->config->get('app.saas_mode_enabled');
-        $passwordHash = $this->hashManager->make($accountData->password);;
+        $isSaasMode   = $this->config->get('app.saas_mode_enabled');
+        $passwordHash = $this->hashManager->make($accountData->password);
 
         return $this->databaseManager->transaction(function () use ($isSaasMode, $passwordHash, $accountData) {
-            $account = $this->accountRepository->create([
-                'timezone' => $this->getTimezone($accountData),
-                'currency_code' => $this->getCurrencyCode($accountData),
-                'name' => $accountData->first_name . ($accountData->last_name ? ' ' . $accountData->last_name : ''),
-                'email' => strtolower($accountData->email),
-                'short_id' => IdHelper::shortId(IdHelper::ACCOUNT_PREFIX),
-                // If the app is not running in SaaS mode, we can immediately verify the account.
-                // Same goes for the email verification below.
-                'account_verified_at' => $isSaasMode ? null : now()->toDateTimeString(),
-                'account_configuration_id' => $this->getAccountConfigurationId($accountData),
-            ]);
 
-            $user = $this->getExistingUser($accountData) ?? $this->userRepository->create([
-                'password' => $passwordHash,
-                'email' => strtolower($accountData->email),
-                'first_name' => $accountData->first_name,
-                'last_name' => $accountData->last_name,
-                'timezone' => $this->getTimezone($accountData),
-                'email_verified_at' => $isSaasMode ? null : now()->toDateTimeString(),
-                'locale' => $accountData->locale,
-            ]);
+            // 🔎 This is a frequent FK cause on new DBs: ensure the default config exists
+            $accountConfigurationId = TxnProbe::step('account_config.resolve_default', function () use ($accountData) {
+                return $this->getAccountConfigurationId($accountData);
+            });
 
-            $this->accountUserAssociationService->associate(
-                user: $user,
-                account: $account,
-                role: Role::ADMIN,
-                status: UserStatus::ACTIVE,
-                isAccountOwner: true
-            );
+            // accounts.insert
+            $account = TxnProbe::step('accounts.insert', function () use ($isSaasMode, $accountData, $accountConfigurationId) {
+                return $this->accountRepository->create([
+                    'timezone'                 => $this->getTimezone($accountData),
+                    'currency_code'            => $this->getCurrencyCode($accountData),
+                    'name'                     => $accountData->first_name . ($accountData->last_name ? ' ' . $accountData->last_name : ''),
+                    'email'                    => strtolower($accountData->email),
+                    'short_id'                 => IdHelper::shortId(IdHelper::ACCOUNT_PREFIX),
+                    'account_verified_at'      => $isSaasMode ? null : now()->toDateTimeString(),
+                    'account_configuration_id' => $accountConfigurationId,
+                ]);
+            });
 
-            $this->emailConfirmationService->sendConfirmation($user, $account->getId());
+            // users.find_existing OR users.create
+            $user = $this->getExistingUser($accountData);
+            if (!$user) {
+                $user = TxnProbe::step('users.create', function () use ($passwordHash, $accountData, $isSaasMode) {
+                    return $this->userRepository->create([
+                        'password'         => $passwordHash,
+                        'email'            => strtolower($accountData->email),
+                        'first_name'       => $accountData->first_name,
+                        'last_name'        => $accountData->last_name,
+                        'timezone'         => $this->getTimezone($accountData),
+                        'email_verified_at'=> $isSaasMode ? null : now()->toDateTimeString(),
+                        'locale'           => $accountData->locale,
+                    ]);
+                });
+            }
+
+            // accounts_users.associate
+            TxnProbe::step('accounts_users.associate', function () use ($user, $account) {
+                $this->accountUserAssociationService->associate(
+                    user: $user,
+                    account: $account,
+                    role: Role::ADMIN,
+                    status: UserStatus::ACTIVE,
+                    isAccountOwner: true
+                );
+            });
+
+            // (email isn’t SQL, but if it throws you’ll see the step)
+            TxnProbe::step('email.send_confirmation', function () use ($user, $account) {
+                $this->emailConfirmationService->sendConfirmation($user, $account->getId());
+                return true;
+            });
 
             return $account;
         });
@@ -108,11 +129,7 @@ class CreateAccountHandler
         if ($accountData->locale !== null) {
             $numberFormatter = new NumberFormatter($accountData->locale, NumberFormatter::CURRENCY);
             $guessedCode = $numberFormatter->getTextAttribute(NumberFormatter::CURRENCY_CODE);
-
-            // 'XXX' denotes an unknown currency
-            if ($guessedCode && $guessedCode !== 'XXX') {
-                return $guessedCode;
-            }
+            if ($guessedCode && $guessedCode !== 'XXX') return $guessedCode;
         }
 
         return $defaultCurrency;
@@ -123,19 +140,22 @@ class CreateAccountHandler
      */
     private function getExistingUser(CreateAccountDTO $accountData): ?UserDomainObject
     {
-        $existingUser = $this->userRepository
-            ->findFirstWhere([
+        // users.find_existing
+        $existingUser = TxnProbe::step('users.find_existing', function () use ($accountData) {
+            return $this->userRepository->findFirstWhere([
                 'email' => strtolower($accountData->email),
             ]);
+        });
 
-        if ($existingUser === null) {
-            return null;
-        }
+        if ($existingUser === null) return null;
 
-        $existingOwner = $this->accountUserRepository->findFirstWhere([
-            'user_id' => $existingUser->getId(),
-            'is_account_owner' => true,
-        ]);
+        // accounts_users.find_owner_by_user
+        $existingOwner = TxnProbe::step('accounts_users.find_owner_by_user', function () use ($existingUser) {
+            return $this->accountUserRepository->findFirstWhere([
+                'user_id'          => $existingUser->getId(),
+                'is_account_owner' => true,
+            ]);
+        });
 
         if ($existingOwner !== null) {
             throw new EmailAlreadyExists(
@@ -155,9 +175,10 @@ class CreateAccountHandler
             $decryptedInviteToken = decrypt($accountData->invite_token);
             $accountConfigurationId = $decryptedInviteToken['account_configuration_id'];
 
-            $accountConfiguration = $this->accountConfigurationRepository->findFirstWhere([
-                'id' => $accountConfigurationId,
-            ]);
+            // account_config.find_by_id
+            $accountConfiguration = TxnProbe::step('account_config.find_by_id', function () use ($accountConfigurationId) {
+                return $this->accountConfigurationRepository->findFirstWhere(['id' => $accountConfigurationId]);
+            });
 
             if ($accountConfiguration !== null) {
                 return $accountConfiguration->getId();
@@ -168,9 +189,10 @@ class CreateAccountHandler
             ]);
         }
 
-        $defaultConfiguration = $this->accountConfigurationRepository->findFirstWhere([
-            'is_system_default' => true,
-        ]);
+        // account_config.find_default
+        $defaultConfiguration = TxnProbe::step('account_config.find_default', function () {
+            return $this->accountConfigurationRepository->findFirstWhere(['is_system_default' => true]);
+        });
 
         if ($defaultConfiguration === null) {
             $this->logger->error('No default account configuration found');

@@ -21,6 +21,8 @@ use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\ValidationException;
 use Throwable;
+use HiEvents\Exceptions\TxnStepException;
+
 
 class CreateAccountAction extends BaseAuthAction
 {
@@ -69,7 +71,17 @@ class CreateAccountAction extends BaseAuthAction
                 message: $e->getMessage(),
                 statusCode: ResponseCodes::HTTP_INTERNAL_SERVER_ERROR,
             );
-        }
+        } catch (TxnStepException $e) { // 👈 ADD THIS
+        // Return the exact failing step + SQL so you can see the culprit
+        return response()->json([
+            'ok'       => false,
+            'where'    => $e->step,
+            'sql'      => $e->sql,
+            'code'     => $e->sqlState ?? (string)$e->getCode(),
+            'bindings' => $e->bindings,
+            'message'  => $e->getMessage(),
+        ], 422);
+    }
 
         try {
             $loginResponse = $this->loginHandler->handle(new LoginCredentialsDTO(

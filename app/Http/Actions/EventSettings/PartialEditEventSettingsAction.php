@@ -10,6 +10,8 @@ use HiEvents\Services\Application\Handlers\EventSettings\DTO\PartialUpdateEventS
 use HiEvents\Services\Application\Handlers\EventSettings\PartialUpdateEventSettingsHandler;
 use Illuminate\Http\JsonResponse;
 use Throwable;
+use HiEvents\Exceptions\TxnStepException;
+
 
 class PartialEditEventSettingsAction extends BaseAction
 {
@@ -26,13 +28,24 @@ class PartialEditEventSettingsAction extends BaseAction
     {
         $this->isActionAuthorized($eventId, EventDomainObject::class);
 
-        $event = $this->partialUpdateEventSettingsHandler->handle(
-            PartialUpdateEventSettingsDTO::fromArray([
-                'settings' => $request->validated(),
-                'event_id' => $eventId,
-                'account_id' => $this->getAuthenticatedAccountId(),
-            ]),
-        );
+        try {
+            $event = $this->partialUpdateEventSettingsHandler->handle(
+                PartialUpdateEventSettingsDTO::fromArray([
+                    'settings'   => $request->validated(),
+                    'event_id'   => $eventId,
+                    'account_id' => $this->getAuthenticatedAccountId(),
+                ]),
+            );
+        } catch (TxnStepException $e) { // 👈 ADD THIS
+            return response()->json([
+                'ok'       => false,
+                'where'    => $e->step,
+                'sql'      => $e->sql,
+                'code'     => $e->sqlState ?? (string)$e->getCode(),
+                'bindings' => $e->bindings,
+                'message'  => $e->getMessage(),
+            ], 422);
+        }
 
         return $this->resourceResponse(EventSettingsResource::class, $event);
     }
