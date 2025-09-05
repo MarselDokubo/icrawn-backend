@@ -3,54 +3,44 @@ set -euo pipefail
 
 cd /var/www/html
 
-# ---- tiny log helpers ----
 log()  { printf "\033[1;34m[entrypoint]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[entrypoint:warn]\033[0m %s\n" "$*"; }
-err()  { printf "\033[1;31m[entrypoint:error]\033[0m %s\n" "$*"; }
 
-# ---- Render sets $PORT at runtime. We'll use it everywhere. ----
-: "${PORT:=8080}"                      # safety default if PORT missing
-# Ensure no other scripts try to start nginx on a port via env
+# ----- Render runtime port -----
+: "${PORT:=8080}"     # default if Render hasn't injected yet
 unset NGINX_PORT || true
 
-# ---- Filesystem / permissions (idempotent) ----
-# Laravel writable bits
-mkdir -p storage storage/logs bootstrap/cache
-chown -R www-data:www-data storage bootstrap/cache || true
-chmod -R 775 storage bootstrap/cache || true
+# ----- Nginx config -----
+# Clean potential default vhosts
+[ -d /etc/nginx/conf.d ]      && rm -f /etc/nginx/conf.d/*.conf      || true
+[ -d /etc/nginx/http.d ]      && rm -f /etc/nginx/http.d/*.conf      || true
+[ -d /etc/nginx/sites-enabled ] && rm -f /etc/nginx/sites-enabled/*  || true
 
-# Ensure log file exists & is writable to avoid Monolog "permission denied"
-touch storage/logs/laravel.log
-chown www-data:www-data storage/logs/laravel.log || true
-chmod 664 storage/logs/laravel.log || true
-
-# ---- Clear any bundled/conflicting nginx vhost configs ----
-# Some base images ship with extra vhosts listening on 80/8080 – nuke them.
-if [ -d /etc/nginx/conf.d ]; then
-  rm -f /etc/nginx/conf.d/*.conf || true
-fi
-if [ -d /etc/nginx/http.d ]; then
-  rm -f /etc/nginx/http.d/*.conf || true
-fi
-if [ -d /etc/nginx/sites-enabled ]; then
-  rm -f /etc/nginx/sites-enabled/* || true
-fi
-
-# ---- Render our nginx.conf from template, pinning listen to $PORT ----
 if [ -f /etc/nginx/nginx.conf.template ]; then
   sed "s/__PORT__/${PORT}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-  # optional visibility:
   grep -n "listen" /etc/nginx/nginx.conf || true
 else
   warn "/etc/nginx/nginx.conf.template not found; nginx may fail to start."
 fi
 
-# ---- App sanity checks ----
-if [ -z "${APP_KEY:-}" ]; then
-  warn "APP_KEY is not set. Sessions/encryption will break. Set APP_KEY=base64:... in Render env."
-fi
+# ----- Laravel file system prep -----
+mkdir -p \
+  storage storage/logs storage/framework/{cache,sessions,views} \
+  storage/app/public storage/app/public/event-images \
+  bootstrap/cache
 
-# ---- Laravel caches ----
+# Ensure log exists & is writable
+touch storage/logs/laravel.log
+
+# Ownership & perms (www-data is the php-fpm/nginx user)
+chown -R www-data:www-data storage bootstrap/cache
+chmod -R 775 storage bootstrap/cache
+chmod 664 storage/logs/laravel.log || true
+
+# Warn if missing APP_KEY (don’t block boot)
+[ -z "${APP_KEY:-}" ] && warn "APP_KEY is not set. Set APP_KEY=base64:... in Render env."
+
+# ----- Laravel caches -----
 log "Clearing caches…"
 php artisan config:clear || true
 php artisan route:clear  || true
@@ -58,28 +48,19 @@ php artisan view:clear   || true
 
 log "Caching config/routes/views…"
 php artisan config:cache || true
-php artisan route:cache  || true
+php artisan route:cache  || true   # ok to fail if closures
 php artisan view:cache   || true
 
-# ---- Storage symlink (safe if already exists) ----
+# Storage symlink (safe if it already exists)
 log "Ensuring storage symlink…"
 php artisan storage:link || true
 
-# ---- Optional: wait for DB & run migrations (only if DB envs exist) ----
+# ----- DB wait & migrations (non-blocking) -----
 if [ -n "${DB_HOST:-}" ] && [ -n "${DB_DATABASE:-}" ] && [ -n "${DB_USERNAME:-}" ]; then
   log "Waiting for database and running migrations…"
-
-  # Default DB_PORT if unset (pgsql/mysql common defaults)
-  if [ -z "${DB_PORT:-}" ]; then
-    case "${DB_CONNECTION:-pgsql}" in
-      mysql) export DB_PORT=3306 ;;
-      pgsql|postgres|postgresql|"") export DB_PORT=5432 ;;
-      *) : ;; # leave empty for other drivers
-    esac
-  fi
-
+  : "${DB_CONNECTION:=pgsql}"
+  : "${DB_PORT:=$( [ "$DB_CONNECTION" = "mysql" ] && echo 3306 || echo 5432 )}"
   tries=0
-  # tiny PDO probe avoids booting the whole framework
   until php -r '
     $driver = getenv("DB_CONNECTION") ?: "pgsql";
     $dsn = $driver.":host=".getenv("DB_HOST").";port=".getenv("DB_PORT").";dbname=".getenv("DB_DATABASE");
@@ -87,20 +68,17 @@ if [ -n "${DB_HOST:-}" ] && [ -n "${DB_DATABASE:-}" ] && [ -n "${DB_USERNAME:-}"
     catch (Throwable $e) { exit(1); }
   '; do
     tries=$((tries+1))
-    if [ "$tries" -ge 10 ]; then
-      warn "Database not reachable after ${tries} attempts — skipping migrations."
-      break
-    fi
+    [ "$tries" -ge 10 ] && { warn "DB not reachable, skipping migrations."; break; }
     sleep 2
   done
-
-  if [ "$tries" -lt 10 ]; then
-    php artisan migrate --force || warn "php artisan migrate failed (continuing startup)"
-  fi
+  [ "$tries" -lt 10 ] && php artisan migrate --force --no-interaction || true
 else
   warn "DB_* env vars not set; skipping migrations."
 fi
 
-# ---- Final: start supervised services (php-fpm + nginx via s6-overlay) ----
+# Final ownership pass (handles files created by artisan)
+chown -R www-data:www-data storage bootstrap/cache
+
+# ----- Start services (php-fpm + nginx via s6-overlay) -----
 log "Starting services on port ${PORT}…"
 exec /init
