@@ -85,6 +85,7 @@ return [
                 'log',
             ],
         ],
+        'default' => env('MAIL_MAILER', 'failover'),
     ],
 
     /*
