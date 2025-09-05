@@ -47,72 +47,140 @@ class CreateAccountHandler
     /**
      * @throws Throwable
      */
-    public function handle(CreateAccountDTO $accountData): AccountDomainObject
-    {
-        if ($this->config->get('app.disable_registration')) {
-            throw new AccountRegistrationDisabledException();
-        }
+    // public function handle(CreateAccountDTO $accountData): AccountDomainObject
+    // {
+    //     if ($this->config->get('app.disable_registration')) {
+    //         throw new AccountRegistrationDisabledException();
+    //     }
 
-        $isSaasMode   = $this->config->get('app.saas_mode_enabled');
-        $passwordHash = $this->hashManager->make($accountData->password);
+    //     $isSaasMode   = $this->config->get('app.saas_mode_enabled');
+    //     $passwordHash = $this->hashManager->make($accountData->password);
 
-        return $this->databaseManager->transaction(function () use ($isSaasMode, $passwordHash, $accountData) {
+    //     return $this->databaseManager->transaction(function () use ($isSaasMode, $passwordHash, $accountData) {
 
-            // 🔎 This is a frequent FK cause on new DBs: ensure the default config exists
-            $accountConfigurationId = TxnProbe::step('account_config.resolve_default', function () use ($accountData) {
-                return $this->getAccountConfigurationId($accountData);
-            });
+    //         // 🔎 This is a frequent FK cause on new DBs: ensure the default config exists
+    //         $accountConfigurationId = TxnProbe::step('account_config.resolve_default', function () use ($accountData) {
+    //             return $this->getAccountConfigurationId($accountData);
+    //         });
 
-            // accounts.insert
-            $account = TxnProbe::step('accounts.insert', function () use ($isSaasMode, $accountData, $accountConfigurationId) {
-                return $this->accountRepository->create([
-                    'timezone'                 => $this->getTimezone($accountData),
-                    'currency_code'            => $this->getCurrencyCode($accountData),
-                    'name'                     => $accountData->first_name . ($accountData->last_name ? ' ' . $accountData->last_name : ''),
-                    'email'                    => strtolower($accountData->email),
-                    'short_id'                 => IdHelper::shortId(IdHelper::ACCOUNT_PREFIX),
-                    'account_verified_at'      => $isSaasMode ? null : now()->toDateTimeString(),
-                    'account_configuration_id' => $accountConfigurationId,
-                ]);
-            });
+    //         // accounts.insert
+    //         $account = TxnProbe::step('accounts.insert', function () use ($isSaasMode, $accountData, $accountConfigurationId) {
+    //             return $this->accountRepository->create([
+    //                 'timezone'                 => $this->getTimezone($accountData),
+    //                 'currency_code'            => $this->getCurrencyCode($accountData),
+    //                 'name'                     => $accountData->first_name . ($accountData->last_name ? ' ' . $accountData->last_name : ''),
+    //                 'email'                    => strtolower($accountData->email),
+    //                 'short_id'                 => IdHelper::shortId(IdHelper::ACCOUNT_PREFIX),
+    //                 'account_verified_at'      => $isSaasMode ? null : now()->toDateTimeString(),
+    //                 'account_configuration_id' => $accountConfigurationId,
+    //             ]);
+    //         });
 
-            // users.find_existing OR users.create
-            $user = $this->getExistingUser($accountData);
-            if (!$user) {
-                $user = TxnProbe::step('users.create', function () use ($passwordHash, $accountData, $isSaasMode) {
-                    return $this->userRepository->create([
-                        'password'         => $passwordHash,
-                        'email'            => strtolower($accountData->email),
-                        'first_name'       => $accountData->first_name,
-                        'last_name'        => $accountData->last_name,
-                        'timezone'         => $this->getTimezone($accountData),
-                        'email_verified_at'=> $isSaasMode ? null : now()->toDateTimeString(),
-                        'locale'           => $accountData->locale,
-                    ]);
-                });
-            }
+    //         // users.find_existing OR users.create
+    //         $user = $this->getExistingUser($accountData);
+    //         if (!$user) {
+    //             $user = TxnProbe::step('users.create', function () use ($passwordHash, $accountData, $isSaasMode) {
+    //                 return $this->userRepository->create([
+    //                     'password'         => $passwordHash,
+    //                     'email'            => strtolower($accountData->email),
+    //                     'first_name'       => $accountData->first_name,
+    //                     'last_name'        => $accountData->last_name,
+    //                     'timezone'         => $this->getTimezone($accountData),
+    //                     'email_verified_at'=> $isSaasMode ? null : now()->toDateTimeString(),
+    //                     'locale'           => $accountData->locale,
+    //                 ]);
+    //             });
+    //         }
 
-            // accounts_users.associate
-            TxnProbe::step('accounts_users.associate', function () use ($user, $account) {
-                $this->accountUserAssociationService->associate(
-                    user: $user,
-                    account: $account,
-                    role: Role::ADMIN,
-                    status: UserStatus::ACTIVE,
-                    isAccountOwner: true
-                );
-            });
+    //         // accounts_users.associate
+    //         TxnProbe::step('accounts_users.associate', function () use ($user, $account) {
+    //             $this->accountUserAssociationService->associate(
+    //                 user: $user,
+    //                 account: $account,
+    //                 role: Role::ADMIN,
+    //                 status: UserStatus::ACTIVE,
+    //                 isAccountOwner: true
+    //             );
+    //         });
 
-            // (email isn’t SQL, but if it throws you’ll see the step)
-            TxnProbe::step('email.send_confirmation', function () use ($user, $account) {
-                $this->emailConfirmationService->sendConfirmation($user, $account->getId());
-                return true;
-            });
+    //         // (email isn’t SQL, but if it throws you’ll see the step)
+    //         TxnProbe::step('email.send_confirmation', function () use ($user, $account) {
+    //             $this->emailConfirmationService->sendConfirmation($user, $account->getId());
+    //             return true;
+    //         });
 
-            return $account;
-        });
+    //         return $account;
+    //     });
+    // }
+public function handle(CreateAccountDTO $accountData): AccountDomainObject
+{
+    if ($this->config->get('app.disable_registration')) {
+        throw new AccountRegistrationDisabledException();
     }
 
+    $isSaasMode   = $this->config->get('app.saas_mode_enabled');
+    $passwordHash = $this->hashManager->make($accountData->password);
+
+    // Run the original transaction body via a closure
+    $runner = function () use ($isSaasMode, $passwordHash, $accountData) {
+
+        $accountConfigurationId = TxnProbe::step('account_config.resolve_default', function () use ($accountData) {
+            return $this->getAccountConfigurationId($accountData);
+        });
+
+        $account = TxnProbe::step('accounts.insert', function () use ($isSaasMode, $accountData, $accountConfigurationId) {
+            return $this->accountRepository->create([
+                'timezone'                 => $this->getTimezone($accountData),
+                'currency_code'            => $this->getCurrencyCode($accountData),
+                'name'                     => $accountData->first_name . ($accountData->last_name ? ' ' . $accountData->last_name : ''),
+                'email'                    => strtolower($accountData->email),
+                'short_id'                 => IdHelper::shortId(IdHelper::ACCOUNT_PREFIX),
+                'account_verified_at'      => $isSaasMode ? null : now()->toDateTimeString(),
+                'account_configuration_id' => $accountConfigurationId,
+            ]);
+        });
+
+        $user = $this->getExistingUser($accountData);
+        if (!$user) {
+            $user = TxnProbe::step('users.create', function () use ($passwordHash, $accountData, $isSaasMode) {
+                return $this->userRepository->create([
+                    'password'          => $passwordHash,
+                    'email'             => strtolower($accountData->email),
+                    'first_name'        => $accountData->first_name,
+                    'last_name'         => $accountData->last_name,
+                    'timezone'          => $this->getTimezone($accountData),
+                    'email_verified_at' => $isSaasMode ? null : now()->toDateTimeString(),
+                    'locale'            => $accountData->locale,
+                ]);
+            });
+        }
+
+        TxnProbe::step('accounts_users.associate', function () use ($user, $account) {
+            $this->accountUserAssociationService->associate(
+                user: $user,
+                account: $account,
+                role: Role::ADMIN,
+                status: UserStatus::ACTIVE,
+                isAccountOwner: true
+            );
+        });
+
+        TxnProbe::step('email.send_confirmation', function () use ($user, $account) {
+            $this->emailConfirmationService->sendConfirmation($user, $account->getId());
+            return true;
+        });
+
+        return $account;
+    };
+
+    // Toggle: disable the transaction to surface the FIRST failing SQL (avoid 25P02)
+    // You can further guard this with config('app.debug') if you want.
+    $noTxn = request()->headers->get('X-Debug-NoTxn') === '1';
+
+    return $noTxn
+        ? $runner()                                // run steps one-by-one (no txn) for debugging
+        : $this->databaseManager->transaction($runner); // normal path
+}
     private function getTimezone(CreateAccountDTO $accountData): ?string
     {
         return $accountData->timezone ?? $this->config->get('app.default_timezone');
