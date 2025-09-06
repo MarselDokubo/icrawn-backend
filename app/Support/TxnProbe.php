@@ -1,24 +1,37 @@
 <?php
-
 namespace HiEvents\Support;
 
-use Closure;
+use HiEvents\Exceptions\TxnStepException as StepEx;
 use Illuminate\Database\QueryException;
-use HiEvents\Exceptions\TxnStepException;
 
-class TxnProbe
+final class TxnProbe
 {
     /**
-     * Wrap a DB step; on failure rethrow with the step name + SQL + bindings.
+     * Wrap a unit of DB work so we can surface step/sql/bindings on failure.
+     *
+     * @template T
+     * @param  string   $where
+     * @param  callable():T  $fn
+     * @return T
+     * @throws StepEx
      */
-    public static function step(string $name, Closure $fn)
+    public static function step(string $where, callable $fn)
     {
         try {
             return $fn();
-        } catch (QueryException $qe) {
-            throw new TxnStepException($name, $qe, $qe->getSql(), $qe->getBindings());
+        } catch (StepEx $e) {
+            // Preserve an inner TxnStepException (keep its sql + where)
+            if (empty($e->step)) { $e->step = $where; }
+            throw $e;
+        } catch (QueryException $e) {
+            throw new \HiEvents\Exceptions\TxnStepException(
+                step:     $where,
+                prev:     $e,
+                sql:      $e->getSql(),
+                bindings: $e->getBindings(),
+            );
         } catch (\Throwable $e) {
-            throw new TxnStepException($name, $e);
+            throw new \HiEvents\Exceptions\TxnStepException(step: $where, prev: $e);
         }
     }
 }
