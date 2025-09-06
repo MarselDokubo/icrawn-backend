@@ -51,93 +51,40 @@ public function createEvent(
     bool                      $noTxn = false
 ): EventDomainObject
 {
-    // ---------- PRE-FLIGHT (no DB writes; no transaction) ----------
-    // 1) Decide cover image (filesystem only)
-    $disk = $this->config->get('filesystems.public');
-    $defaultCoversPath = $this->config->get('app.event_categories_cover_images_path');
+    $work = function () use ($eventData, $eventSettings) {
+        // 1) Organizer + settings (this is where the SELECT on organizer_settings happens)
+        $organizer = TxnProbe::step('organizers.fetch_with_settings', function () use ($eventData) {
+            return $this->getOrganizer(
+                organizerId: $eventData->getOrganizerId(),
+                accountId:   $eventData->getAccountId()
+            );
+        });
 
-    $candidateFile = $eventData->getCategory() . '.jpg';
-    $candidatePath = $defaultCoversPath . '/' . $candidateFile;
-
-    $fallbackFile = 'default.jpg';
-    $fallbackPath = $defaultCoversPath . '/default.jpg';
-
-    $coverFilename = null;
-    $coverPath     = null;
-
-    if ($this->filesystemManager->disk($disk)->exists($candidatePath)) {
-        $coverFilename = $candidateFile;
-        $coverPath     = $candidatePath;
-    } elseif ($this->filesystemManager->disk($disk)->exists($fallbackPath)) {
-        $coverFilename = $fallbackFile;
-        $coverPath     = $fallbackPath;
-    }
-
-    // 2) Fetch organizer (+ settings) OUTSIDE the tx (read-only, quick)
-    $organizer = $this->organizerRepository
-        ->loadRelation(OrganizerSettingDomainObject::class)
-        ->findFirstWhere([
-            'id'         => $eventData->getOrganizerId(),
-            'account_id' => $eventData->getAccountId(),
-        ]);
-
-    if ($organizer === null) {
-        throw new \HiEvents\Exceptions\OrganizerNotFoundException(
-            __('Organizer :id not found', ['id' => $eventData->getOrganizerId()])
+        // 2) Insert event
+        $event = TxnProbe::step('events.insert', fn () =>
+            $this->handleEventCreate($eventData)
         );
-    }
 
-    // ---------- TX BODY (DB-only, fast) ----------
-    $work = function () use ($eventData, $eventSettings, $organizer, $coverFilename, $coverPath) {
+        // 3) Possibly insert a default cover image (images table insert)
+        $eventCoverCreated = $this->createEventCover($event);
 
-        // events.insert
-        $event = $this->handleEventCreate($eventData);
-
-        // images.insert (no filesystem work here — we already decided filename/path)
-        if ($coverFilename !== null && $coverPath !== null) {
-            $this->imageRepository->create([
-                'account_id'  => $event->getAccountId(),
-                'entity_id'   => $event->getId(),
-                'entity_type' => \HiEvents\DomainObjects\EventDomainObject::class,
-                'type'        => \HiEvents\DomainObjects\Enums\ImageType::EVENT_COVER->name,
-                'filename'    => $coverFilename,
-                'disk'        => $this->config->get('filesystems.default'),
-                'path'        => $coverPath,
-                'size'        => 139673,
-                'mime_type'   => 'image/jpg',
-            ]);
-        }
-
-        // event_settings.insert
+        // 4) Insert event_settings (either provided payload or defaults from organizer)
         $this->createEventSettings(
             eventSettings:     $eventSettings,
             event:             $event,
             organizer:         $organizer,
-            eventCoverCreated: $coverFilename !== null
+            eventCoverCreated: $eventCoverCreated,
         );
 
-        // event_statistics.insert
+        // 5) Insert event_statistics
         $this->createEventStatistics($event);
 
         return $event;
     };
 
-    // If caller asked for no transaction (X-Debug-NoTxn: 1), just run the work.
-    if ($noTxn) {
-        return $work();
-    }
-
-    // IMPORTANT: get a fresh session so we never inherit an aborted tx state (25P02)
-    $conn = $this->databaseManager->connection();
-    $conn->disconnect();
-    $conn->reconnect();
-
-    // Now run the minimal, DB-only transaction
-    return $this->databaseManager->transaction($work);
+    // Let the caller (handler) choose to run without a transaction for debugging
+    return $noTxn ? $work() : $this->databaseManager->transaction($work);
 }
-
-
-
 
     /**
      * @throws OrganizerNotFoundException
@@ -233,73 +180,58 @@ public function createEvent(
         return true;
     }
 
-    private function createEventSettings(
-        ?EventSettingDomainObject $eventSettings,
-        EventDomainObject         $event,
-        OrganizerDomainObject     $organizer,
-        bool                      $eventCoverCreated = false
-    ): void {
-        if ($eventSettings !== null) {
-            $eventSettings->setEventId($event->getId());
-            $eventSettingsArray = $eventSettings->toArray();
-            unset($eventSettingsArray['id']);
+private function createEventSettings(
+    ?EventSettingDomainObject $eventSettings,
+    EventDomainObject         $event,
+    OrganizerDomainObject     $organizer,
+    bool                      $eventCoverCreated = false
+): void
+{
+    if ($eventSettings !== null) {
+        $eventSettings->setEventId($event->getId());
+        $payload = $eventSettings->toArray();
+        unset($payload['id']);
 
-            TxnProbe::step('event_settings.insert', fn () =>
-                $this->eventSettingsRepository->create($eventSettingsArray)
-            );
+        // Simple insert → arrow function is fine (no `use` needed)
+        TxnProbe::step('event_settings.insert', fn () =>
+            $this->eventSettingsRepository->create($payload)
+        );
 
-            return;
-        }
-
-        $organizerSettings = $organizer->getOrganizerSettings();
-
-        // ⛏️ FIX: classic closure, not arrow+use
-        TxnProbe::step('event_settings.insert_defaults', function () use ($event, $organizer, $organizerSettings, $eventCoverCreated) {
-            $this->eventSettingsRepository->create([
-                'event_id'                       => $event->getId(),
-                'homepage_background_color'      => $organizerSettings->getHomepageThemeSetting(
-                    'homepage_content_background_color',
-                    '#ffffff'
-                ),
-                'homepage_primary_text_color'    => $organizerSettings->getHomepageThemeSetting(
-                    'homepage_primary_text_color',
-                    '#000000'
-                ),
-                'homepage_primary_color'         => $organizerSettings->getHomepageThemeSetting(
-                    'homepage_primary_color',
-                    '#7b5db8'
-                ),
-                'homepage_secondary_text_color'  => $organizerSettings->getHomepageThemeSetting(
-                    'homepage_secondary_text_color',
-                    '#ffffff'
-                ),
-                'homepage_secondary_color'       => $organizerSettings->getHomepageThemeSetting(
-                    'homepage_secondary_color',
-                    '#7a5eb9'
-                ),
-                'homepage_body_background_color' => $organizerSettings->getHomepageThemeSetting(
-                    'homepage_background_color',
-                    '#ffffff'
-                ),
-
-                'homepage_background_type'       => $eventCoverCreated
-                    ? HomepageBackgroundType::MIRROR_COVER_IMAGE->name
-                    : HomepageBackgroundType::COLOR->name,
-                'continue_button_text'           => __('Continue'),
-                'support_email'                  => $organizer->getEmail(),
-
-                'payment_providers'              => [PaymentProviders::STRIPE->value],
-                'offline_payment_instructions'   => null,
-
-                'enable_invoicing'               => false,
-                'invoice_label'                  => __('Invoice'),
-                'invoice_prefix'                 => 'INV-',
-                'invoice_start_number'           => 1,
-                'require_billing_address'        => false,
-                'organization_name'              => $organizer->getName(),
-                'organization_address'           => null,
-                'invoice_tax_details'            => null,
-            ]);
-        });
+        return;
     }
+
+    $organizerSettings = $organizer->getOrganizerSettings();
+
+    // Defaults insert → needs a block; use a normal closure with `use`
+    TxnProbe::step('event_settings.insert_defaults', function () use ($event, $organizer, $organizerSettings, $eventCoverCreated) {
+        $this->eventSettingsRepository->create([
+            'event_id'                          => $event->getId(),
+            'homepage_background_color'         => $organizerSettings->getHomepageThemeSetting('homepage_content_background_color', '#ffffff'),
+            'homepage_primary_text_color'       => $organizerSettings->getHomepageThemeSetting('homepage_primary_text_color', '#000000'),
+            'homepage_primary_color'            => $organizerSettings->getHomepageThemeSetting('homepage_primary_color', '#7b5db8'),
+            'homepage_secondary_text_color'     => $organizerSettings->getHomepageThemeSetting('homepage_secondary_text_color', '#ffffff'),
+            'homepage_secondary_color'          => $organizerSettings->getHomepageThemeSetting('homepage_secondary_color', '#7a5eb9'),
+            'homepage_body_background_color'    => $organizerSettings->getHomepageThemeSetting('homepage_background_color', '#ffffff'),
+
+            'homepage_background_type'          => $eventCoverCreated
+                ? HomepageBackgroundType::MIRROR_COVER_IMAGE->name
+                : HomepageBackgroundType::COLOR->name,
+            'continue_button_text'              => __('Continue'),
+            'support_email'                     => $organizer->getEmail(),
+
+            'payment_providers'                 => [PaymentProviders::STRIPE->value],
+            'offline_payment_instructions'      => null,
+
+            'enable_invoicing'                  => false,
+            'invoice_label'                     => __('Invoice'),
+            'invoice_prefix'                    => 'INV-',
+            'invoice_start_number'              => 1,
+            'require_billing_address'           => false,
+            'organization_name'                 => $organizer->getName(),
+            'organization_address'              => null,
+            'invoice_tax_details'               => null,
+        ]);
+    });
+}
+
 }
