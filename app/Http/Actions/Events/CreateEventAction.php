@@ -53,6 +53,8 @@ class CreateEventAction extends BaseAction
                     'code'     => $e->sqlState ?? (string)$e->getCode(),
                     'bindings' => $e->bindings,
                     'message'  => $e->getMessage(),
+                    'debug_header_seen' => $request->headers->get('X-Debug-NoTxn'),
+                    'handler_no_txn'    => request()->headers->get('X-Debug-NoTxn') === '1',
                 ], 500);
             }
             throw $e;
