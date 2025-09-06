@@ -3,6 +3,7 @@
 namespace HiEvents\Http\Actions\Events;
 
 use HiEvents\Exceptions\OrganizerNotFoundException;
+use HiEvents\Exceptions\TxnStepException;
 use HiEvents\Http\Actions\BaseAction;
 use HiEvents\Http\Request\Event\CreateEventRequest;
 use HiEvents\Resources\Event\EventResource;
@@ -16,8 +17,7 @@ class CreateEventAction extends BaseAction
 {
     public function __construct(
         private readonly CreateEventHandler $createEventHandler
-    )
-    {
+    ) {
     }
 
     /**
@@ -31,7 +31,7 @@ class CreateEventAction extends BaseAction
             $request->validated(),
             [
                 'account_id' => $this->getAuthenticatedAccountId(),
-                'user_id' => $authorisedUser->getId(),
+                'user_id'    => $authorisedUser->getId(),
             ]
         );
 
@@ -43,6 +43,19 @@ class CreateEventAction extends BaseAction
             throw ValidationException::withMessages([
                 'organizer_id' => $e->getMessage(),
             ]);
+        } catch (TxnStepException $e) {
+            // Rich debug payload when requested
+            if ($request->headers->get('X-Debug') === '1') {
+                return response()->json([
+                    'ok'       => false,
+                    'where'    => $e->step,
+                    'sql'      => $e->sql,
+                    'code'     => $e->sqlState ?? (string)$e->getCode(),
+                    'bindings' => $e->bindings,
+                    'message'  => $e->getMessage(),
+                ], 500);
+            }
+            throw $e;
         }
 
         return $this->resourceResponse(EventResource::class, $event);

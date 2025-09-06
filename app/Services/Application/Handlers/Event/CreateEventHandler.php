@@ -11,7 +11,9 @@ use HiEvents\Services\Application\Handlers\Event\DTO\CreateEventDTO;
 use HiEvents\Services\Domain\Event\CreateEventService;
 use HiEvents\Services\Domain\Organizer\OrganizerFetchService;
 use HiEvents\Services\Domain\ProductCategory\CreateProductCategoryService;
+use HiEvents\Support\TxnProbe;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\QueryException;
 use Throwable;
 
 class CreateEventHandler
@@ -21,8 +23,7 @@ class CreateEventHandler
         private readonly OrganizerFetchService        $organizerFetchService,
         private readonly CreateProductCategoryService $createProductCategoryService,
         private readonly DatabaseManager              $databaseManager,
-    )
-    {
+    ) {
     }
 
     /**
@@ -31,7 +32,11 @@ class CreateEventHandler
      */
     public function handle(CreateEventDTO $eventData): EventDomainObject
     {
-        return $this->databaseManager->transaction(fn() => $this->createEvent($eventData));
+        // Optional: disable the DB transaction to expose the first failing statement (avoid 25P02 masking)
+        $noTxn  = request()->headers->get('X-Debug-NoTxn') === '1';
+        $runner = fn () => $this->createEvent($eventData);
+
+        return $noTxn ? $runner() : $this->databaseManager->transaction($runner);
     }
 
     /**
@@ -40,9 +45,12 @@ class CreateEventHandler
      */
     private function createEvent(CreateEventDTO $eventData): EventDomainObject
     {
-        $organizer = $this->organizerFetchService->fetchOrganizer(
-            organizerId: $eventData->organizer_id,
-            accountId: $eventData->account_id
+        // 1) Verify organizer (ownership/FK guard)
+        $organizer = TxnProbe::step('organizers.fetch', fn () =>
+            $this->organizerFetchService->fetchOrganizer(
+                organizerId: $eventData->organizer_id,
+                accountId:   $eventData->account_id
+            )
         );
 
         $event = (new EventDomainObject())
@@ -61,9 +69,22 @@ class CreateEventHandler
             ->setEventSettings($eventData->event_settings)
             ->setLocationDetails($eventData->location_details?->toArray());
 
-        $newEvent = $this->createEventService->createEvent($event);
+        // 3) Persist the event
+        $newEvent = TxnProbe::step('events.create', fn () =>
+            $this->createEventService->createEvent($event)
+        );
 
-        $this->createProductCategoryService->createDefaultProductCategory($newEvent);
+        // 4) Create default product category (catch duplicate unique violations)
+        try {
+            TxnProbe::step('product_categories.create_default', fn () =>
+                $this->createProductCategoryService->createDefaultProductCategory($newEvent)
+            );
+        } catch (QueryException $e) {
+            // 23505 = unique_violation (PostgreSQL)
+            if ((string)$e->getCode() !== '23505') {
+                throw $e;
+            }
+        }
 
         return $newEvent;
     }
