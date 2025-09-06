@@ -26,7 +26,7 @@ use NumberFormatter;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
-// ⬇️ ADD THIS
+use HiEvents\Exceptions\TxnStepException;
 use HiEvents\Support\TxnProbe;
 
 class CreateAccountHandler
