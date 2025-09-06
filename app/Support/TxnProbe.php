@@ -2,28 +2,23 @@
 
 namespace HiEvents\Support;
 
+use Closure;
 use Illuminate\Database\QueryException;
-use Throwable;
+use HiEvents\Exceptions\TxnStepException;
 
-final class TxnProbe
+class TxnProbe
 {
     /**
-     * Wrap a step in a labeled try/catch so failures report where/SQL/bindings/dbCode.
-     *
-     * @template T
-     * @param  string   $where
-     * @param  callable():T  $fn
-     * @return T
-     * @throws TxnStepException
+     * Wrap a DB step; on failure rethrow with the step name + SQL + bindings.
      */
-    public static function step(string $where, callable $fn)
+    public static function step(string $name, Closure $fn)
     {
         try {
             return $fn();
-        } catch (QueryException $e) {
-            throw TxnStepException::fromQueryException($where, $e);
-        } catch (Throwable $e) {
-            throw TxnStepException::wrap($where, $e);
+        } catch (QueryException $qe) {
+            throw new TxnStepException($name, $qe, $qe->getSql(), $qe->getBindings());
+        } catch (\Throwable $e) {
+            throw new TxnStepException($name, $e);
         }
     }
 }
