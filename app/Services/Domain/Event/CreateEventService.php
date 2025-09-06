@@ -43,13 +43,16 @@ class CreateEventService
      */
 // backend/app/Services/Domain/Event/CreateEventService.php
 
+// backend/app/Services/Domain/Event/CreateEventService.php
+
 public function createEvent(
     EventDomainObject         $eventData,
     ?EventSettingDomainObject $eventSettings = null,
     bool                      $noTxn = false
 ): EventDomainObject
 {
-    // ---- PRE-FLIGHT (no DB writes; no transaction): decide cover to use ----
+    // ---------- PRE-FLIGHT (no DB writes; no transaction) ----------
+    // 1) Decide cover image (filesystem only)
     $disk = $this->config->get('filesystems.public');
     $defaultCoversPath = $this->config->get('app.event_categories_cover_images_path');
 
@@ -69,25 +72,33 @@ public function createEvent(
         $coverFilename = $fallbackFile;
         $coverPath     = $fallbackPath;
     }
-    // NOTE: no DB yet, only quick filesystem checks
 
-    // ---- TX body: only DB statements, as fast as possible ----
-    $work = function () use ($eventData, $eventSettings, $coverFilename, $coverPath) {
-        // (A) organizer (read) – quick select
-        $organizer = $this->getOrganizer(
-            organizerId: $eventData->getOrganizerId(),
-            accountId:   $eventData->getAccountId()
+    // 2) Fetch organizer (+ settings) OUTSIDE the tx (read-only, quick)
+    $organizer = $this->organizerRepository
+        ->loadRelation(OrganizerSettingDomainObject::class)
+        ->findFirstWhere([
+            'id'         => $eventData->getOrganizerId(),
+            'account_id' => $eventData->getAccountId(),
+        ]);
+
+    if ($organizer === null) {
+        throw new \HiEvents\Exceptions\OrganizerNotFoundException(
+            __('Organizer :id not found', ['id' => $eventData->getOrganizerId()])
         );
+    }
 
-        // (B) events.insert
+    // ---------- TX BODY (DB-only, fast) ----------
+    $work = function () use ($eventData, $eventSettings, $organizer, $coverFilename, $coverPath) {
+
+        // events.insert
         $event = $this->handleEventCreate($eventData);
 
-        // (C) images.insert (no IO; we already chose filename/path)
+        // images.insert (no filesystem work here — we already decided filename/path)
         if ($coverFilename !== null && $coverPath !== null) {
             $this->imageRepository->create([
                 'account_id'  => $event->getAccountId(),
                 'entity_id'   => $event->getId(),
-                'entity_type' => EventDomainObject::class,
+                'entity_type' => \HiEvents\DomainObjects\EventDomainObject::class,
                 'type'        => \HiEvents\DomainObjects\Enums\ImageType::EVENT_COVER->name,
                 'filename'    => $coverFilename,
                 'disk'        => $this->config->get('filesystems.default'),
@@ -97,23 +108,34 @@ public function createEvent(
             ]);
         }
 
-        // (D) event_settings.insert (using organizer’s defaults if needed)
+        // event_settings.insert
         $this->createEventSettings(
-            eventSettings: $eventSettings,
-            event:         $event,
-            organizer:     $organizer,
+            eventSettings:     $eventSettings,
+            event:             $event,
+            organizer:         $organizer,
             eventCoverCreated: $coverFilename !== null
         );
 
-        // (E) event_statistics.insert
+        // event_statistics.insert
         $this->createEventStatistics($event);
 
         return $event;
     };
 
-    // Only wrap in a tx when requested (default = yes)
-    return $noTxn ? $work() : $this->databaseManager->transaction($work);
+    // If caller asked for no transaction (X-Debug-NoTxn: 1), just run the work.
+    if ($noTxn) {
+        return $work();
+    }
+
+    // IMPORTANT: get a fresh session so we never inherit an aborted tx state (25P02)
+    $conn = $this->databaseManager->connection();
+    $conn->disconnect();
+    $conn->reconnect();
+
+    // Now run the minimal, DB-only transaction
+    return $this->databaseManager->transaction($work);
 }
+
 
 
 
