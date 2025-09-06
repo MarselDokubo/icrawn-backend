@@ -41,46 +41,80 @@ class CreateEventService
     /**
      * @throws Throwable
      */
+// backend/app/Services/Domain/Event/CreateEventService.php
+
 public function createEvent(
     EventDomainObject         $eventData,
     ?EventSettingDomainObject $eventSettings = null,
     bool                      $noTxn = false
 ): EventDomainObject
 {
-    // 0) Do the READ outside any transaction so 25P02 can’t mask earlier errors
-    $organizer = TxnProbe::step('organizers.fetch_with_settings', fn () =>
-        $this->getOrganizer(
+    // ---- PRE-FLIGHT (no DB writes; no transaction): decide cover to use ----
+    $disk = $this->config->get('filesystems.public');
+    $defaultCoversPath = $this->config->get('app.event_categories_cover_images_path');
+
+    $candidateFile = $eventData->getCategory() . '.jpg';
+    $candidatePath = $defaultCoversPath . '/' . $candidateFile;
+
+    $fallbackFile = 'default.jpg';
+    $fallbackPath = $defaultCoversPath . '/default.jpg';
+
+    $coverFilename = null;
+    $coverPath     = null;
+
+    if ($this->filesystemManager->disk($disk)->exists($candidatePath)) {
+        $coverFilename = $candidateFile;
+        $coverPath     = $candidatePath;
+    } elseif ($this->filesystemManager->disk($disk)->exists($fallbackPath)) {
+        $coverFilename = $fallbackFile;
+        $coverPath     = $fallbackPath;
+    }
+    // NOTE: no DB yet, only quick filesystem checks
+
+    // ---- TX body: only DB statements, as fast as possible ----
+    $work = function () use ($eventData, $eventSettings, $coverFilename, $coverPath) {
+        // (A) organizer (read) – quick select
+        $organizer = $this->getOrganizer(
             organizerId: $eventData->getOrganizerId(),
             accountId:   $eventData->getAccountId()
-        )
-    );
-
-    // 1) Wrap only the WRITES in a txn
-    $work = function () use ($eventData, $eventSettings, $organizer) {
-        // Insert event
-        $event = TxnProbe::step('events.insert', fn () =>
-            $this->handleEventCreate($eventData)
         );
 
-        // Optional default cover (images insert)
-        $eventCoverCreated = $this->createEventCover($event);
+        // (B) events.insert
+        $event = $this->handleEventCreate($eventData);
 
-        // Insert event_settings
+        // (C) images.insert (no IO; we already chose filename/path)
+        if ($coverFilename !== null && $coverPath !== null) {
+            $this->imageRepository->create([
+                'account_id'  => $event->getAccountId(),
+                'entity_id'   => $event->getId(),
+                'entity_type' => EventDomainObject::class,
+                'type'        => \HiEvents\DomainObjects\Enums\ImageType::EVENT_COVER->name,
+                'filename'    => $coverFilename,
+                'disk'        => $this->config->get('filesystems.default'),
+                'path'        => $coverPath,
+                'size'        => 139673,
+                'mime_type'   => 'image/jpg',
+            ]);
+        }
+
+        // (D) event_settings.insert (using organizer’s defaults if needed)
         $this->createEventSettings(
-            eventSettings:     $eventSettings,
-            event:             $event,
-            organizer:         $organizer,
-            eventCoverCreated: $eventCoverCreated,
+            eventSettings: $eventSettings,
+            event:         $event,
+            organizer:     $organizer,
+            eventCoverCreated: $coverFilename !== null
         );
 
-        // Insert event_statistics
+        // (E) event_statistics.insert
         $this->createEventStatistics($event);
 
         return $event;
     };
 
+    // Only wrap in a tx when requested (default = yes)
     return $noTxn ? $work() : $this->databaseManager->transaction($work);
 }
+
 
 
     /**
