@@ -32,9 +32,9 @@ class CreateEventHandler
      */
     public function handle(CreateEventDTO $eventData): EventDomainObject
     {
-        // Optional: disable the DB transaction to expose the first failing statement (avoid 25P02 masking)
+        // Optional: disable the outer DB transaction to expose first failing statement
         $noTxn  = request()->headers->get('X-Debug-NoTxn') === '1';
-        $runner = fn () => $this->createEvent($eventData);
+        $runner = fn () => $this->createEvent($eventData, $noTxn); // ← CHANGED
 
         return $noTxn ? $runner() : $this->databaseManager->transaction($runner);
     }
@@ -43,7 +43,7 @@ class CreateEventHandler
      * @throws OrganizerNotFoundException
      * @throws Throwable
      */
-    private function createEvent(CreateEventDTO $eventData): EventDomainObject
+    private function createEvent(CreateEventDTO $eventData, bool $noTxn): EventDomainObject // ← CHANGED
     {
         // 1) Verify organizer (ownership/FK guard)
         $organizer = TxnProbe::step('organizers.fetch', fn () =>
@@ -69,15 +69,16 @@ class CreateEventHandler
             ->setEventSettings($eventData->event_settings)
             ->setLocationDetails($eventData->location_details?->toArray());
 
-        // 3) Persist the event
-        $newEvent = TxnProbe::step('events.create', fn () =>
-            $this->createEventService->createEvent($event)
-        );
+        // 3) Persist the event (propagate $noTxn down)
+            $newEvent = TxnProbe::step('events.create', fn () =>
+                $this->createEventService->createEvent(eventData: $event, noTxn: $noTxn)
+            );
+
 
         // 4) Create default product category (catch duplicate unique violations)
         try {
             TxnProbe::step('product_categories.create_default', fn () =>
-                $this->createProductCategoryService->createDefaultProductCategory($newEvent)
+                $this->createProductCategoryService->createDefaultProductCategory($newEvent, $noTxn) // ← pass too if that service uses a tx
             );
         } catch (QueryException $e) {
             // 23505 = unique_violation (PostgreSQL)

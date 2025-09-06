@@ -10,6 +10,7 @@ use HiEvents\Resources\Event\EventResource;
 use HiEvents\Services\Application\Handlers\Event\CreateEventHandler;
 use HiEvents\Services\Application\Handlers\Event\DTO\CreateEventDTO;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -55,6 +56,8 @@ class CreateEventAction extends BaseAction
                     'message'  => $e->getMessage(),
                     'debug_header_seen' => $request->headers->get('X-Debug-NoTxn'),
                     'handler_no_txn'    => request()->headers->get('X-Debug-NoTxn') === '1',
+                    'db_tx_level'       => DB::connection()->transactionLevel(), // <— here
+
                 ], 500);
             }
             throw $e;

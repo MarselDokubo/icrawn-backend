@@ -18,6 +18,7 @@ use HiEvents\Repository\Interfaces\EventStatisticRepositoryInterface;
 use HiEvents\Repository\Interfaces\ImageRepositoryInterface;
 use HiEvents\Repository\Interfaces\OrganizerRepositoryInterface;
 use HiEvents\Services\Infrastructure\HtmlPurifier\HtmlPurifierService;
+use HiEvents\Support\TxnProbe;
 use Illuminate\Config\Repository;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Filesystem\FilesystemManager;
@@ -35,39 +36,48 @@ class CreateEventService
         private readonly ImageRepositoryInterface          $imageRepository,
         private readonly Repository                        $config,
         private readonly FilesystemManager                 $filesystemManager,
-    )
-    {
-    }
+    ) {}
 
     /**
      * @throws Throwable
      */
     public function createEvent(
         EventDomainObject         $eventData,
-        ?EventSettingDomainObject $eventSettings = null
-    ): EventDomainObject
-    {
-        return $this->databaseManager->transaction(function () use ($eventData, $eventSettings) {
-            $organizer = $this->getOrganizer(
-                organizerId: $eventData->getOrganizerId(),
-                accountId: $eventData->getAccountId()
+        ?EventSettingDomainObject $eventSettings = null,
+        bool                      $noTxn = false
+    ): EventDomainObject {
+        $work = function () use ($eventData, $eventSettings) {
+            // 1) Organizer + settings
+            $organizer = TxnProbe::step('organizers.fetch_with_settings', fn () =>
+                $this->getOrganizer(
+                    organizerId: $eventData->getOrganizerId(),
+                    accountId:   $eventData->getAccountId()
+                )
             );
 
-            $event = $this->handleEventCreate($eventData);
+            // 2) Insert event
+            $event = TxnProbe::step('events.insert', fn () =>
+                $this->handleEventCreate($eventData)
+            );
 
+            // 3) Default cover (optional)
             $eventCoverCreated = $this->createEventCover($event);
 
+            // 4) Insert event_settings
             $this->createEventSettings(
-                eventSettings: $eventSettings,
-                event: $event,
-                organizer: $organizer,
+                eventSettings:     $eventSettings,
+                event:             $event,
+                organizer:         $organizer,
                 eventCoverCreated: $eventCoverCreated,
             );
 
+            // 5) Insert event_statistics
             $this->createEventStatistics($event);
 
             return $event;
-        });
+        };
+
+        return $noTxn ? $work() : $this->databaseManager->transaction($work);
     }
 
     /**
@@ -78,7 +88,7 @@ class CreateEventService
         $organizer = $this->organizerRepository
             ->loadRelation(OrganizerSettingDomainObject::class)
             ->findFirstWhere([
-                'id' => $organizerId,
+                'id'         => $organizerId,
                 'account_id' => $accountId,
             ]);
 
@@ -94,43 +104,42 @@ class CreateEventService
     private function handleEventCreate(EventDomainObject $eventData): EventDomainObject
     {
         return $this->eventRepository->create([
-            'title' => $eventData->getTitle(),
-            'organizer_id' => $eventData->getOrganizerId(),
-            'start_date' => DateHelper::convertToUTC($eventData->getStartDate(), $eventData->getTimezone()),
-            'end_date' => $eventData->getEndDate()
+            'title'             => $eventData->getTitle(),
+            'organizer_id'      => $eventData->getOrganizerId(),
+            'start_date'        => DateHelper::convertToUTC($eventData->getStartDate(), $eventData->getTimezone()),
+            'end_date'          => $eventData->getEndDate()
                 ? DateHelper::convertToUTC($eventData->getEndDate(), $eventData->getTimezone())
                 : null,
-            'description' => $this->purifier->purify($eventData->getDescription()),
-            'timezone' => $eventData->getTimezone(),
-            'currency' => $eventData->getCurrency(),
-            'category' => $eventData->getCategory(),
-            'location_details' => $eventData->getLocationDetails(),
-            'account_id' => $eventData->getAccountId(),
-            'user_id' => $eventData->getUserId(),
-            'status' => $eventData->getStatus(),
-            'short_id' => IdHelper::shortId(IdHelper::EVENT_PREFIX),
-            'attributes' => $eventData->getAttributes(),
+            'description'       => $this->purifier->purify($eventData->getDescription()),
+            'timezone'          => $eventData->getTimezone(),
+            'currency'          => $eventData->getCurrency(),
+            'category'          => $eventData->getCategory(),
+            'location_details'  => $eventData->getLocationDetails(),
+            'account_id'        => $eventData->getAccountId(),
+            'user_id'           => $eventData->getUserId(),
+            'status'            => $eventData->getStatus(),
+            'short_id'          => IdHelper::shortId(IdHelper::EVENT_PREFIX),
+            'attributes'        => $eventData->getAttributes(),
         ]);
     }
 
     private function createEventStatistics(EventDomainObject $event): void
     {
-        $this->eventStatisticsRepository->create([
-            'event_id' => $event->getId(),
-            'products_sold' => 0,
-            'sales_total_gross' => 0,
-            'sales_total_before_additions' => 0,
-            'total_tax' => 0,
-            'total_fee' => 0,
-            'orders_created' => 0,
-        ]);
+        TxnProbe::step('event_statistics.insert', fn () =>
+            $this->eventStatisticsRepository->create([
+                'event_id'                     => $event->getId(),
+                'products_sold'                => 0,
+                'sales_total_gross'            => 0,
+                'sales_total_before_additions' => 0,
+                'total_tax'                    => 0,
+                'total_fee'                    => 0,
+                'orders_created'               => 0,
+            ])
+        );
     }
 
     /**
      * If a default cover image exists for the event category, it will be created.
-     *
-     * @param EventDomainObject $event
-     * @return bool
      */
     private function createEventCover(EventDomainObject $event): bool
     {
@@ -140,28 +149,27 @@ class CreateEventService
         $imageFilename = $event->getCategory() . '.jpg';
         $imagePath = $defaultCoversPath . '/' . $imageFilename;
 
-
         if (!$this->filesystemManager->disk($disk)->exists($imagePath)) {
-            // Use a fallback default image if the requested cover does not exist
             $imageFilename = 'default.jpg';
             $imagePath = $defaultCoversPath . '/default.jpg';
             if (!$this->filesystemManager->disk($disk)->exists($imagePath)) {
-                // If even the default image does not exist, skip creating cover
                 return false;
             }
         }
 
-        $this->imageRepository->create([
-            'account_id' => $event->getAccountId(),
-            'entity_id' => $event->getId(),
-            'entity_type' => EventDomainObject::class,
-            'type' => ImageType::EVENT_COVER->name,
-            'filename' => $imageFilename,
-            'disk' => $this->config->get('filesystems.default'),
-            'path' => $imagePath,
-            'size' => 139673,
-            'mime_type' => 'image/jpg',
-        ]);
+        TxnProbe::step('images.insert_event_cover', fn () =>
+            $this->imageRepository->create([
+                'account_id'  => $event->getAccountId(),
+                'entity_id'   => $event->getId(),
+                'entity_type' => EventDomainObject::class,
+                'type'        => ImageType::EVENT_COVER->name,
+                'filename'    => $imageFilename,
+                'disk'        => $this->config->get('filesystems.default'),
+                'path'        => $imagePath,
+                'size'        => 139673,
+                'mime_type'   => 'image/jpg',
+            ])
+        );
 
         return true;
     }
@@ -171,65 +179,68 @@ class CreateEventService
         EventDomainObject         $event,
         OrganizerDomainObject     $organizer,
         bool                      $eventCoverCreated = false
-    ): void
-    {
+    ): void {
         if ($eventSettings !== null) {
             $eventSettings->setEventId($event->getId());
             $eventSettingsArray = $eventSettings->toArray();
-
             unset($eventSettingsArray['id']);
 
-            $this->eventSettingsRepository->create($eventSettingsArray);
+            TxnProbe::step('event_settings.insert', fn () =>
+                $this->eventSettingsRepository->create($eventSettingsArray)
+            );
 
             return;
         }
 
         $organizerSettings = $organizer->getOrganizerSettings();
 
-        $this->eventSettingsRepository->create([
-            'event_id' => $event->getId(),
-            'homepage_background_color' => $organizerSettings->getHomepageThemeSetting(
-                'homepage_content_background_color',
-                '#ffffff'
-            ),
-            'homepage_primary_text_color' => $organizerSettings->getHomepageThemeSetting(
-                'homepage_primary_text_color',
-                '#000000'
-            ),
-            'homepage_primary_color' => $organizerSettings->getHomepageThemeSetting(
-                'homepage_primary_color',
-                '#7b5db8'
-            ),
-            'homepage_secondary_text_color' => $organizerSettings->getHomepageThemeSetting(
-                'homepage_secondary_text_color',
-                '#ffffff'
-            ),
-            'homepage_secondary_color' => $organizerSettings->getHomepageThemeSetting(
-                'homepage_secondary_color',
-                '#7a5eb9'
-            ),
-            'homepage_body_background_color' => $organizerSettings->getHomepageThemeSetting(
-                'homepage_background_color',
-                '#ffffff'
-            ),
+        // ⛏️ FIX: classic closure, not arrow+use
+        TxnProbe::step('event_settings.insert_defaults', function () use ($event, $organizer, $organizerSettings, $eventCoverCreated) {
+            $this->eventSettingsRepository->create([
+                'event_id'                       => $event->getId(),
+                'homepage_background_color'      => $organizerSettings->getHomepageThemeSetting(
+                    'homepage_content_background_color',
+                    '#ffffff'
+                ),
+                'homepage_primary_text_color'    => $organizerSettings->getHomepageThemeSetting(
+                    'homepage_primary_text_color',
+                    '#000000'
+                ),
+                'homepage_primary_color'         => $organizerSettings->getHomepageThemeSetting(
+                    'homepage_primary_color',
+                    '#7b5db8'
+                ),
+                'homepage_secondary_text_color'  => $organizerSettings->getHomepageThemeSetting(
+                    'homepage_secondary_text_color',
+                    '#ffffff'
+                ),
+                'homepage_secondary_color'       => $organizerSettings->getHomepageThemeSetting(
+                    'homepage_secondary_color',
+                    '#7a5eb9'
+                ),
+                'homepage_body_background_color' => $organizerSettings->getHomepageThemeSetting(
+                    'homepage_background_color',
+                    '#ffffff'
+                ),
 
-            'homepage_background_type' => $eventCoverCreated
-                ? HomepageBackgroundType::MIRROR_COVER_IMAGE->name
-                : HomepageBackgroundType::COLOR->name,
-            'continue_button_text' => __('Continue'),
-            'support_email' => $organizer->getEmail(),
+                'homepage_background_type'       => $eventCoverCreated
+                    ? HomepageBackgroundType::MIRROR_COVER_IMAGE->name
+                    : HomepageBackgroundType::COLOR->name,
+                'continue_button_text'           => __('Continue'),
+                'support_email'                  => $organizer->getEmail(),
 
-            'payment_providers' => [PaymentProviders::STRIPE->value],
-            'offline_payment_instructions' => null,
+                'payment_providers'              => [PaymentProviders::STRIPE->value],
+                'offline_payment_instructions'   => null,
 
-            'enable_invoicing' => false,
-            'invoice_label' => __('Invoice'),
-            'invoice_prefix' => 'INV-',
-            'invoice_start_number' => 1,
-            'require_billing_address' => false,
-            'organization_name' => $organizer->getName(),
-            'organization_address' => null,
-            'invoice_tax_details' => null,
-        ]);
+                'enable_invoicing'               => false,
+                'invoice_label'                  => __('Invoice'),
+                'invoice_prefix'                 => 'INV-',
+                'invoice_start_number'           => 1,
+                'require_billing_address'        => false,
+                'organization_name'              => $organizer->getName(),
+                'organization_address'           => null,
+                'invoice_tax_details'            => null,
+            ]);
+        });
     }
 }
