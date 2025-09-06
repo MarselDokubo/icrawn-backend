@@ -41,44 +41,47 @@ class CreateEventService
     /**
      * @throws Throwable
      */
-    public function createEvent(
-        EventDomainObject         $eventData,
-        ?EventSettingDomainObject $eventSettings = null,
-        bool                      $noTxn = false
-    ): EventDomainObject {
-        $work = function () use ($eventData, $eventSettings) {
-            // 1) Organizer + settings
-            $organizer = TxnProbe::step('organizers.fetch_with_settings', fn () =>
-                $this->getOrganizer(
-                    organizerId: $eventData->getOrganizerId(),
-                    accountId:   $eventData->getAccountId()
-                )
-            );
+public function createEvent(
+    EventDomainObject         $eventData,
+    ?EventSettingDomainObject $eventSettings = null,
+    bool                      $noTxn = false
+): EventDomainObject
+{
+    // 0) Do the READ outside any transaction so 25P02 can’t mask earlier errors
+    $organizer = TxnProbe::step('organizers.fetch_with_settings', fn () =>
+        $this->getOrganizer(
+            organizerId: $eventData->getOrganizerId(),
+            accountId:   $eventData->getAccountId()
+        )
+    );
 
-            // 2) Insert event
-            $event = TxnProbe::step('events.insert', fn () =>
-                $this->handleEventCreate($eventData)
-            );
+    // 1) Wrap only the WRITES in a txn
+    $work = function () use ($eventData, $eventSettings, $organizer) {
+        // Insert event
+        $event = TxnProbe::step('events.insert', fn () =>
+            $this->handleEventCreate($eventData)
+        );
 
-            // 3) Default cover (optional)
-            $eventCoverCreated = $this->createEventCover($event);
+        // Optional default cover (images insert)
+        $eventCoverCreated = $this->createEventCover($event);
 
-            // 4) Insert event_settings
-            $this->createEventSettings(
-                eventSettings:     $eventSettings,
-                event:             $event,
-                organizer:         $organizer,
-                eventCoverCreated: $eventCoverCreated,
-            );
+        // Insert event_settings
+        $this->createEventSettings(
+            eventSettings:     $eventSettings,
+            event:             $event,
+            organizer:         $organizer,
+            eventCoverCreated: $eventCoverCreated,
+        );
 
-            // 5) Insert event_statistics
-            $this->createEventStatistics($event);
+        // Insert event_statistics
+        $this->createEventStatistics($event);
 
-            return $event;
-        };
+        return $event;
+    };
 
-        return $noTxn ? $work() : $this->databaseManager->transaction($work);
-    }
+    return $noTxn ? $work() : $this->databaseManager->transaction($work);
+}
+
 
     /**
      * @throws OrganizerNotFoundException
