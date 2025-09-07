@@ -1,10 +1,9 @@
 {
-    "name": "hieventsdev/ICRAWN-EVENTS",
+    "name": "app/icrawn-events",
     "type": "project",
     "description": "ICRAWN-EVENTS - Ticket selling and event management.",
     "keywords": ["ticketing", "events"],
-    "license": "AGPL-3.0",
-    "version": "0.0.1",
+    "license": "AGPL-3.0-or-later",
     "require": {
         "php": "^8.2",
         "ext-intl": "*",
