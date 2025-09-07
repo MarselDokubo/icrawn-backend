@@ -21,7 +21,7 @@ class GetEventPublicAction extends BaseAction
     )
     {
     }
-
+ 
     public function __invoke(int $eventId, Request $request): Response|JsonResponse
     {
         $event = $this->getPublicEventHandler->handle(GetPublicEventDTO::fromArray([
