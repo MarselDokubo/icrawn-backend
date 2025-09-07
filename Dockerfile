@@ -5,6 +5,9 @@ WORKDIR /var/www/html
 
 USER root
 
+# Install bash (needed only if your Start Command is "bash /usr/local/bin/start.sh")
+RUN apk add --no-cache bash
+
 # Keep your pool user tweaks
 RUN echo "" >> /usr/local/etc/php-fpm.d/docker-php-serversideup-pool.conf && \
     echo "user = www-data" >> /usr/local/etc/php-fpm.d/docker-php-serversideup-pool.conf && \
@@ -41,10 +44,7 @@ RUN mkdir -p /var/www/html/vendor/ezyang/htmlpurifier/library/HTMLPurifier/Defin
 COPY start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 
-# Informational; Render uses $PORT
-EXPOSE 8080
-
 # Let Render healthcheck externally (no fixed-port HEALTHCHECK here)
 
 # Bind Nginx to $PORT and launch services
-CMD ["bash", "/usr/local/bin/start.sh"]
+CMD ["sh", "/usr/local/bin/start.sh"]
