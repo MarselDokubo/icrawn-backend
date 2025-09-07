@@ -46,5 +46,4 @@ RUN chmod +x /usr/local/bin/start.sh
 
 # Let Render healthcheck externally (no fixed-port HEALTHCHECK here)
 
-# Bind Nginx to $PORT and launch services
-CMD ["sh", "/usr/local/bin/start.sh"]
+EXPOSE 8080
