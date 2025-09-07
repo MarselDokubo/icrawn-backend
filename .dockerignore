@@ -25,3 +25,11 @@ fly.toml
 **/.DS_Store
 **/Thumbs.db
 public/hot
+.env
+.git
+node_modules
+tests
+docker-compose.yml
+Dockerfile.dev
+README.md
+.vscode

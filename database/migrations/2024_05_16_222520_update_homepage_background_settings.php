@@ -13,6 +13,16 @@ return new class extends Migration
             $table->string('homepage_body_background_color', 100)->nullable();
             $table->string('homepage_background_type', 30)->default(HomepageBackgroundType::COLOR->name);
         });
+            if (!Schema::hasColumn('event_settings', 'homepage_body_background_color')) {
+                Schema::table('event_settings', static function (Blueprint $table) {
+                    $table->string('homepage_body_background_color', 100)->nullable();
+                });
+            }
+            if (!Schema::hasColumn('event_settings', 'homepage_background_type')) {
+                Schema::table('event_settings', static function (Blueprint $table) {
+                    $table->string('homepage_background_type', 30)->default(HomepageBackgroundType::COLOR->name);
+                });
+            }
     }
 
     public function down(): void
@@ -21,5 +31,15 @@ return new class extends Migration
             $table->dropColumn('homepage_body_background_color');
             $table->dropColumn('homepage_background_type');
         });
+            if (Schema::hasColumn('event_settings', 'homepage_body_background_color')) {
+                Schema::table('event_settings', static function (Blueprint $table) {
+                    $table->dropColumn('homepage_body_background_color');
+                });
+            }
+            if (Schema::hasColumn('event_settings', 'homepage_background_type')) {
+                Schema::table('event_settings', static function (Blueprint $table) {
+                    $table->dropColumn('homepage_background_type');
+                });
+            }
     }
 };
