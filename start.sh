@@ -1,27 +1,27 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 # Bind Nginx to Render's dynamic port
 export NGINX_PORT="${PORT:-8080}"
 
-# Use a fixed APP_KEY in Render; this is a fallback if it's missing
-if [ -z "${APP_KEY:-}" ] || [ "${APP_KEY}" = "" ]; then
+# Generate APP_KEY only if missing
+if [ -z "${APP_KEY:-}" ]; then
   php artisan key:generate --force
 fi
 
-# Warm caches
+# Warm caches (route:cache can fail if closures)
 php artisan config:cache
-# If you use route closures in prod, make this tolerant or skip it
 php artisan route:cache || true
 php artisan view:cache
 
-# NO MIGRATIONS HERE
+# NO migrations (per your choice)
+# php artisan migrate --force || true
 
-# Optional: symlink storage (no-op if already linked)
+# Optional
 php artisan storage:link || true
 
 # Permissions (best-effort)
 chown -R www-data:www-data storage bootstrap/cache || true
 
-# Start nginx + php-fpm (s6)
+# Hand off to s6 (starts Nginx + PHP-FPM)
 exec /init
