@@ -150,26 +150,33 @@ use Illuminate\Support\Facades\DB;
 $router = app()->get('router');
 
 $router->get('/__health', function () {
+    $out = [
+        'ok'   => true,
+        'time' => now()->toIso8601String(),
+        'commit' => null,
+    ];
+
+    // DB basic info
     try {
-        // simple DB check
-        $ok = DB::select('select 1 as ok')[0]->ok ?? null;
-
-        // prove SSL to Supabase
-        $ssl = DB::select('select ssl, version, cipher from pg_stat_ssl where pid = pg_backend_pid()')[0] ?? null;
-
-        // a little identity to prove which DB we hit
-        $who = DB::select("select current_user as user, current_database() as db, inet_server_port() as port")[0];
-
-        return response()->json([
-            'ok'     => $ok === 1,
-            'ssl'    => $ssl,            // e.g. {ssl:1, version:'TLSv1.3', cipher:'TLS_AES_256_GCM_SHA384'}
-            'db'     => $who,            // e.g. {user:'postgres.lulx...', db:'postgres', port:5432}
-            'commit' => env('RENDER_GIT_COMMIT', env('GIT_SHA')),
-            'time'   => now()->toIso8601String(),
-        ]);
+        $row = DB::selectOne("select current_user as user, current_database() as db, inet_server_port() as port");
+        $out['db'] = $row;
     } catch (\Throwable $e) {
-        return response()->json(['ok' => false, 'error' => $e->getMessage()], 500);
+        $out['ok'] = false;
+        $out['db_error'] = $e->getMessage();
+        Log::error('health: db_error', ['e' => $e->getMessage()]);
     }
+
+    // SSL info (best-effort; may not exist depending on pooler/view perms)
+    try {
+        $ssl = DB::selectOne("select ssl, version, cipher from pg_stat_ssl where pid = pg_backend_pid()");
+        $out['ssl'] = $ssl;
+    } catch (\Throwable $e) {
+        $out['ssl'] = null;
+        $out['ssl_error'] = $e->getMessage();
+        // don't mark ok=false for this; it’s informational
+    }
+
+    return response()->json($out, $out['ok'] ? 200 : 503);
 });
 
 $router->prefix('/auth')->group(
