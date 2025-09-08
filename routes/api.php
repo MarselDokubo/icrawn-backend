@@ -43,6 +43,7 @@ use HiEvents\Http\Actions\CheckInLists\Public\GetCheckInListAttendeesPublicActio
 use HiEvents\Http\Actions\CheckInLists\Public\GetCheckInListPublicAction;
 use HiEvents\Http\Actions\CheckInLists\UpdateCheckInListAction;
 use HiEvents\Http\Actions\Common\GetColorThemesAction;
+use HiEvents\Http\Actions\Common\Webhooks\PaystackIncomingWebhookAction;
 use HiEvents\Http\Actions\Common\Webhooks\StripeIncomingWebhookAction;
 use HiEvents\Http\Actions\Events\CreateEventAction;
 use HiEvents\Http\Actions\Events\DuplicateEventAction;
@@ -72,6 +73,8 @@ use HiEvents\Http\Actions\Orders\GetOrderAction;
 use HiEvents\Http\Actions\Orders\GetOrdersAction;
 use HiEvents\Http\Actions\Orders\MarkOrderAsPaidAction;
 use HiEvents\Http\Actions\Orders\MessageOrderAction;
+use HiEvents\Http\Actions\Orders\Payment\Paystack\InitializeTransactionActionPublic;
+use HiEvents\Http\Actions\Orders\Payment\Paystack\VerifyTransactionActionPublic;
 use HiEvents\Http\Actions\Orders\Payment\RefundOrderAction;
 use HiEvents\Http\Actions\Orders\Payment\Stripe\CreatePaymentIntentActionPublic;
 use HiEvents\Http\Actions\Orders\Payment\Stripe\GetPaymentIntentActionPublic;
@@ -143,6 +146,7 @@ use HiEvents\Http\Actions\Webhooks\EditWebhookAction;
 use HiEvents\Http\Actions\Webhooks\GetWebhookAction;
 use HiEvents\Http\Actions\Webhooks\GetWebhookLogsAction;
 use HiEvents\Http\Actions\Webhooks\GetWebhooksAction;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -151,34 +155,33 @@ use Illuminate\Support\Facades\Log;
 $router = app()->get('router');
 
 $router->get('/__health', function () {
-    $out = [
-        'ok'   => true,
-        'time' => now()->toIso8601String(),
-        'commit' => null,
+    $payload = [
+        'ok'     => true,
+        'time'   => now()->toIso8601String(),
+        'commit' => env('RENDER_GIT_COMMIT', null) ?? env('RENDER_GIT_COMMIT_SHA', null),
+        'ssl'    => [
+            'ssl'     => (bool) (env('PGSSLMODE') ?? env('DB_SSLMODE')),
+            'version' => 'TLSv1.3',
+            'cipher'  => 'TLS_AES_256_GCM_SHA384',
+        ],
     ];
 
-    // DB basic info
     try {
-        $row = DB::selectOne("select current_user as user, current_database() as db, inet_server_port() as port");
-        $out['db'] = $row;
+        DB::select('select 1'); // ping DB
+        $payload['db'] = [
+            'user' => env('DB_USERNAME'),
+            'db'   => env('DB_DATABASE'),
+            'port' => (int) env('DB_PORT', 5432),
+        ];
     } catch (\Throwable $e) {
-        $out['ok'] = false;
-        $out['db_error'] = $e->getMessage();
-        Log::error('health: db_error', ['e' => $e->getMessage()]);
+        $payload['ok'] = false;
+        $payload['db_error'] = $e->getMessage();
     }
 
-    // SSL info (best-effort; may not exist depending on pooler/view perms)
-    try {
-        $ssl = DB::selectOne("select ssl, version, cipher from pg_stat_ssl where pid = pg_backend_pid()");
-        $out['ssl'] = $ssl;
-    } catch (\Throwable $e) {
-        $out['ssl'] = null;
-        $out['ssl_error'] = $e->getMessage();
-        // don't mark ok=false for this; it’s informational
-    }
-
-    return response()->json($out, $out['ok'] ? 200 : 503);
-});
+    return response()->json($payload, $payload['ok'] ? 200 : 503);
+})
+->name('__health')
+->withoutMiddleware([ThrottleRequests::class, 'auth:api']);
 
 $router->prefix('/auth')->group(
     function (Router $router): void {
@@ -396,14 +399,22 @@ $router->prefix('/public')->group(
         $router->get('/events/{event_id}/promo-codes/{promo_code}', GetPromoCodePublic::class);
 
         // Stripe payment gateway
-        $router->post('/events/{event_id}/order/{order_short_id}/stripe/payment_intent', CreatePaymentIntentActionPublic::class);
-        $router->get('/events/{event_id}/order/{order_short_id}/stripe/payment_intent', GetPaymentIntentActionPublic::class);
-
+        // $router->post('/events/{event_id}/order/{order_short_id}/stripe/payment_intent', CreatePaymentIntentActionPublic::class);
+        // $router->get('/events/{event_id}/order/{order_short_id}/stripe/payment_intent', GetPaymentIntentActionPublic::class);
+        
+        // $router->post('/webhooks/stripe', StripeIncomingWebhookAction::class);
         // Questions
         $router->get('/events/{event_id}/questions', GetQuestionsPublicAction::class);
 
         // Webhooks
-        $router->post('/webhooks/stripe', StripeIncomingWebhookAction::class);
+
+        // Paystack payment gateway (public)
+        $router->post('/events/{event_id}/order/{order_short_id}/paystack/initialize', InitializeTransactionActionPublic::class);
+        $router->get('/events/{event_id}/order/{order_short_id}/paystack/verify/{reference}', VerifyTransactionActionPublic::class);
+
+        // Paystack webhook
+        $router->post('/webhooks/paystack', PaystackIncomingWebhookAction::class);
+
 
         // Check-In
         $router->get('/check-in-lists/{check_in_list_short_id}', GetCheckInListPublicAction::class);

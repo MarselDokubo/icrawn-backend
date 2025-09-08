@@ -29,4 +29,5 @@ interface OrderRepositoryInterface extends RepositoryInterface
     public function findByShortId(string $orderShortId): ?OrderDomainObject;
 
     public function findOrdersAssociatedWithProducts(int $eventId, array $productIds, array $orderStatuses): Collection;
+
 }

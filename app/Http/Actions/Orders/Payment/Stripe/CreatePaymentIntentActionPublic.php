@@ -24,7 +24,7 @@ class CreatePaymentIntentActionPublic extends BaseAction
         } catch (CreatePaymentIntentFailedException $e) {
             return $this->errorResponse($e->getMessage(), Response::HTTP_UNPROCESSABLE_ENTITY);
         }
-
+ 
         return $this->jsonResponse([
             'client_secret' => $createIntent->clientSecret,
             'account_id' => $createIntent->accountId,

@@ -26,3 +26,5 @@ README.md
 tests
 .git
 .env.testing
+*.zip
+
